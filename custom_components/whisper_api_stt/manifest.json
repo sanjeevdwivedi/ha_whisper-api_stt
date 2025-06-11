@@ -1,11 +1,11 @@
 {
   "domain": "whisper_api_stt",
   "name": "OpenAI Whisper API STT",
-  "codeowners": ["@davidohne"],
+  "codeowners": ["@sanjeevdwivedi"],
   "dependencies": [],
-  "documentation": "https://github.com/davidohne/ha_whisper-api_stt/",
+  "documentation": "https://github.com/sanjeevdwivedi/ha_whisper-api_stt/",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/davidohne/ha_whisper-api_stt/issues",
+  "issue_tracker": "https://github.com/sanjeevdwivedi/ha_whisper-api_stt/issues",
   "requirements": ["aiohttp>=3.7.4"],
   "version": "0.1.0"
 }

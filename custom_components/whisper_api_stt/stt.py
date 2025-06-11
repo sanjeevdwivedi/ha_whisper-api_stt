@@ -3,10 +3,7 @@ Support for Whisper API STT.
 """
 from typing import AsyncIterable
 import aiohttp
-import os
-import tempfile
 import voluptuous as vol
-from homeassistant.components.tts import CONF_LANG
 from homeassistant.components.stt import (
     AudioBitRates,
     AudioChannels,
@@ -20,61 +17,41 @@ from homeassistant.components.stt import (
 )
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
-import wave
 import io
 
 
-CONF_API_KEY = 'api_key'
-DEFAULT_LANG = 'en-US'
-OPENAI_STT_URL = "http://sanjeev-debian-llm-vm.lan:9000/v1/audio/transcriptions"
-CONF_MODEL = 'model'
 CONF_URL = 'url'
-CONF_PROMPT = 'prompt'
-CONF_TEMPERATURE = 'temperature'
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_API_KEY): cv.string,
-    vol.Optional(CONF_LANG, default=DEFAULT_LANG): cv.string,
-    vol.Optional(CONF_MODEL, default='whisper-1'): cv.string,
     vol.Optional(CONF_URL, default=None): cv.string,
     vol.Optional(CONF_PROMPT, default=None): cv.string,
-    vol.Optional(CONF_TEMPERATURE, default=0): cv.positive_int,
 })
 
 
 async def async_get_engine(hass, config, discovery_info=None):
     """Set up Whisper API STT speech component."""
-    api_key = config[CONF_API_KEY]
-    language = config.get(CONF_LANG, DEFAULT_LANG)
-    model = config.get(CONF_MODEL)
-    url = config.get('url')
-    prompt = config.get('prompt')
-    temperature = config.get('temperature')
-    return OpenAISTTProvider(hass, api_key, language, model, url, prompt, temperature)
+    url = config.get(CONF_URL)
+    return OpenAISTTProvider(hass, url)
 
 
 class OpenAISTTProvider(Provider):
     """The Whisper API STT provider."""
 
-    def __init__(self, hass, api_key, lang, model, url, prompt, temperature):
+    def __init__(self, hass, url):
         """Initialize Whisper API STT provider."""
         self.hass = hass
-        self._api_key = api_key
-        self._language = lang
-        self._model = model
-        self._url = url
         self._prompt = prompt
-        self._temperature = temperature
+        self._url = url
 
     @property
     def default_language(self) -> str:
         """Return the default language."""
-        return self._language.split(',')[0]
+        return "en"
 
     @property
     def supported_languages(self) -> list[str]:
         """Return the list of supported languages."""
-        return self._language.split(',')
+        return ["en"]
 
     @property
     def supported_formats(self) -> list[AudioFormats]:
@@ -102,6 +79,33 @@ class OpenAISTTProvider(Provider):
         return [AudioChannels.CHANNEL_MONO]
 
     async def async_process_audio_stream(self, metadata: SpeechMetadata, stream: AsyncIterable[bytes]) -> SpeechResult:
+        import struct
+        import io
+        import logging
+        _LOGGER = logging.getLogger(__name__)
+
+        def convert_pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
+            """Convert raw PCM audio data to WAV format."""
+            wav_buffer = io.BytesIO()
+            data_size = len(pcm_data)
+            file_size = 36 + data_size
+
+            wav_buffer.write(b'RIFF')
+            wav_buffer.write(struct.pack('<I', file_size))
+            wav_buffer.write(b'WAVE')
+            wav_buffer.write(b'fmt ')
+            wav_buffer.write(struct.pack('<I', 16))
+            wav_buffer.write(struct.pack('<H', 1))
+            wav_buffer.write(struct.pack('<H', channels))
+            wav_buffer.write(struct.pack('<I', sample_rate))
+            wav_buffer.write(struct.pack('<I', sample_rate * channels * sample_width))
+            wav_buffer.write(struct.pack('<H', channels * sample_width))
+            wav_buffer.write(struct.pack('<H', sample_width * 8))
+            wav_buffer.write(b'data')
+            wav_buffer.write(struct.pack('<I', data_size))
+            wav_buffer.write(pcm_data)
+            return wav_buffer.getvalue()
+
         data = b''
         async for chunk in stream:
             data += chunk
@@ -110,39 +114,49 @@ class OpenAISTTProvider(Provider):
             return SpeechResult("", SpeechResultState.ERROR)
 
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-                with wave.open(temp_file, 'wb') as wav_file:
-                    wav_file.setnchannels(metadata.channel)
-                    wav_file.setsampwidth(2)  # 2 bytes per sample
-                    wav_file.setframerate(metadata.sample_rate)
-                    wav_file.writeframes(data)
-                temp_file_path = temp_file.name
+            # Convert PCM to WAV in-memory
+            wav_audio = convert_pcm_to_wav(
+                data,
+                sample_rate=metadata.sample_rate,
+                channels=metadata.channel,
+                sample_width=2
+            )
 
-
-            url = self._url or OPENAI_STT_URL
-
-            headers = {
-                'Authorization': f'Bearer {self._api_key}',
+            params = {
+                'encode': 'true',
+                'task': 'transcribe',
+                'output': 'txt'
             }
 
-            file_to_send = open(temp_file_path, 'rb')
             form = aiohttp.FormData()
-            form.add_field('file', file_to_send, filename='audio.wav', content_type='audio/wav')
-            form.add_field('language', self._language)
-            form.add_field('model', self._model)
+            form.add_field(
+                'audio_file',
+                wav_audio,
+                filename='recording.wav',
+                content_type='audio/wav'
+            )
+
+            url = self._url or "http://sanjeev-debian-llm-vm.lan:9000/asr"
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=form, headers=headers) as response:
-                    if response.status == 200:
-                        json_response = await response.json()
-                        return SpeechResult(json_response["text"], SpeechResultState.SUCCESS)
-                    else:
-                        text = await response.text()
+                async with session.post(
+                    url,
+                    params=params,
+                    data=form,
+                    headers={'Accept': 'text/plain'}
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        _LOGGER.error(f"Transcription failed: {response.status} - {error_text}")
                         return SpeechResult("", SpeechResultState.ERROR)
+
+                    transcribed_text = await response.text()
+                    if not transcribed_text or not transcribed_text.strip():
+                        _LOGGER.warning("Transcription returned empty text")
+                        return SpeechResult("", SpeechResultState.ERROR)
+
+                    return SpeechResult(transcribed_text.strip(), SpeechResultState.SUCCESS)
+
         except Exception as e:
+            _LOGGER.error(f"Error during transcription: {e}")
             return SpeechResult("", SpeechResultState.ERROR)
-        finally:
-            if 'file_to_send' in locals():
-                file_to_send.close()
-            if temp_file_path:
-                os.remove(temp_file_path)
