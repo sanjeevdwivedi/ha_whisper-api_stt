@@ -1,6 +1,6 @@
 {
   "domain": "whisper_api_stt",
-  "name": "OpenAI Whisper API STT",
+  "name": "Sanjeev OpenAI Whisper API STT",
   "codeowners": ["@sanjeevdwivedi"],
   "dependencies": [],
   "documentation": "https://github.com/sanjeevdwivedi/ha_whisper-api_stt/",
